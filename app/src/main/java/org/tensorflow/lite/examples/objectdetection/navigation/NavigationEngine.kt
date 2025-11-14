@@ -1,5 +1,7 @@
 package org.tensorflow.lite.examples.objectdetection.navigation
 
+import android.util.Log
+import org.tensorflow.lite.examples.objectdetection.DepthConfig
 import kotlin.math.pow
 
 /**
@@ -7,10 +9,14 @@ import kotlin.math.pow
  * 
  * Converts raw YOLO detections into actionable navigation guidance.
  * Handles filtering, direction detection, distance estimation, and priority ranking.
+ * 
+ * Now supports MiDaS depth-based distance estimation for improved accuracy.
  */
 class NavigationEngine {
 
     companion object {
+        private const val TAG = "NavigationEngine"
+        
         // Filtering thresholds
         private const val MIN_CONFIDENCE = 0.40f
         private const val MIN_Y_CENTER = 0.5f  // Only lower half of frame
@@ -20,15 +26,9 @@ class NavigationEngine {
         private const val LEFT_BOUNDARY = 0.33f
         private const val RIGHT_BOUNDARY = 0.66f
         
-        // Distance score boundaries
-        private const val VERY_CLOSE_THRESHOLD = 0.15f
-        private const val CLOSE_THRESHOLD = 0.35f
-        private const val MEDIUM_THRESHOLD = 0.65f
-        
         // Priority weights
         private const val CONFIDENCE_WEIGHT = 2.0f
         private const val DISTANCE_WEIGHT = 3.0f
-        private const val WIDTH_WEIGHT = 4.0f
         private const val CENTER_DIRECTION_WEIGHT = 4.0f
         private const val SIDE_DIRECTION_WEIGHT = 1.0f
         
@@ -62,7 +62,7 @@ class NavigationEngine {
         // Keep track of original detection for rate limiter
         val candidatesWithDetection = filtered.map { detection ->
             val direction = calculateDirection(detection.xCenter)
-            val distance = calculateDistance(detection.width)
+            val distance = calculateDistance(detection)
             val priority = calculatePriority(detection, direction, distance)
             
             val guidance = Guidance(
@@ -140,17 +140,36 @@ class NavigationEngine {
     }
 
     /**
-     * Calculate distance category based on bounding box width.
-     * Larger objects = closer, smaller objects = farther.
+     * Calculate distance category using depth information.
+     * Uses MiDaS depth measurements for accurate distance estimation.
+     * 
+     * @param detection NavigationDetection with depth information
+     * @return DistanceCategory based on depth measurements
      */
-    private fun calculateDistance(width: Float): DistanceCategory {
-        // Distance score: objects farther away have higher scores
-        val distanceScore = (1 - width).pow(4)
+    private fun calculateDistance(detection: NavigationDetection): DistanceCategory {
+        // Use depth-based distance
+        val distanceMeters = detection.distanceMeters
         
+        return if (distanceMeters != null) {
+            // Use MiDaS depth measurements (accurate)
+            Log.d(TAG, "Depth-based distance for ${detection.label}: ${distanceMeters}m (depth=${detection.depthValue})")
+            calculateDistanceFromMeters(distanceMeters)
+        } else {
+            // No depth available - log warning and use FAR as safe default
+            Log.w(TAG, "No depth available for ${detection.label}, defaulting to FAR")
+            DistanceCategory.FAR
+        }
+    }
+    
+    /**
+     * Calculate distance category from depth measurements in meters.
+     * Uses MiDaS depth estimation for accurate distance categorization.
+     */
+    private fun calculateDistanceFromMeters(meters: Float): DistanceCategory {
         return when {
-            distanceScore < VERY_CLOSE_THRESHOLD -> DistanceCategory.VERY_CLOSE
-            distanceScore < CLOSE_THRESHOLD -> DistanceCategory.CLOSE
-            distanceScore < MEDIUM_THRESHOLD -> DistanceCategory.MEDIUM
+            meters < DepthConfig.DEPTH_VERY_CLOSE_THRESHOLD -> DistanceCategory.VERY_CLOSE
+            meters < DepthConfig.DEPTH_CLOSE_THRESHOLD -> DistanceCategory.CLOSE
+            meters < DepthConfig.DEPTH_MEDIUM_THRESHOLD -> DistanceCategory.MEDIUM
             else -> DistanceCategory.FAR
         }
     }
@@ -159,7 +178,8 @@ class NavigationEngine {
      * Calculate priority score for ranking detections.
      * Higher score = more important to announce.
      * 
-     * Formula: priority = confidence*2 + (1/distanceScore)*3 + directionWeight + width*4
+     * Uses MiDaS depth measurements exclusively for accurate prioritization.
+     * Formula: priority = confidence*2 + distanceContribution*3 + directionWeight
      */
     private fun calculatePriority(
         detection: NavigationDetection,
@@ -170,11 +190,17 @@ class NavigationEngine {
         var priority = detection.confidence * CONFIDENCE_WEIGHT
         
         // Distance contribution (closer = higher priority)
-        val distanceScore = (1 - detection.width).pow(4)
-        val distanceContribution = if (distanceScore > 0) {
-            (1.0f / distanceScore) * DISTANCE_WEIGHT
+        val distanceContribution = if (detection.distanceMeters != null) {
+            // Use accurate depth-based distance
+            val meters = detection.distanceMeters
+            // Inverse relationship: closer objects get higher scores
+            // Cap at 10m to prevent extreme values
+            val cappedMeters = meters.coerceIn(0.1f, 10.0f)
+            (10.0f / cappedMeters) * DISTANCE_WEIGHT
         } else {
-            DISTANCE_WEIGHT * 10 // Very close objects
+            // No depth available - use low priority
+            Log.w(TAG, "No depth for priority calculation: ${detection.label}")
+            0.5f * DISTANCE_WEIGHT
         }
         priority += distanceContribution
         
@@ -184,9 +210,6 @@ class NavigationEngine {
             Direction.LEFT, Direction.RIGHT -> SIDE_DIRECTION_WEIGHT
         }
         priority += directionWeight
-        
-        // Width contribution (larger objects are more important)
-        priority += detection.width * WIDTH_WEIGHT
         
         return priority
     }

@@ -10,5 +10,9 @@ data class NavigationDetection(
     val xCenter: Float,      // Normalized horizontal center (0.0 = left, 1.0 = right)
     val yCenter: Float,      // Normalized vertical center (0.0 = top, 1.0 = bottom)
     val width: Float,        // Normalized width (0.0 to 1.0)
-    val height: Float        // Normalized height (0.0 to 1.0)
+    val height: Float,       // Normalized height (0.0 to 1.0)
+    
+    // Depth information from MiDaS depth estimation
+    val depthValue: Float? = null,        // Raw relative depth from MiDaS model
+    val distanceMeters: Float? = null     // Converted to approximate meters
 )
