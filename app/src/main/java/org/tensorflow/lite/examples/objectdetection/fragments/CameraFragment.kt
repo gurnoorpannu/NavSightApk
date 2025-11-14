@@ -36,7 +36,8 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.navigation.Navigation
-import org.tensorflow.lite.examples.objectdetection.GeminiSceneHelper
+import org.tensorflow.lite.examples.objectdetection.BuildConfig
+import org.tensorflow.lite.examples.objectdetection.SceneAnalyzer
 import java.util.LinkedList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -55,13 +56,12 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
         get() = _fragmentCameraBinding!!
 
     private lateinit var objectDetectorHelper: ObjectDetectorHelper
-    private lateinit var geminiSceneHelper: GeminiSceneHelper
+    private lateinit var sceneAnalyzer: SceneAnalyzer
     private lateinit var bitmapBuffer: Bitmap
     private var preview: Preview? = null
     private var imageAnalyzer: ImageAnalysis? = null
     private var camera: Camera? = null
     private var cameraProvider: ProcessCameraProvider? = null
-    private var currentDetections: MutableList<Detection>? = null
 
     /** Blocking camera operations are performed using this executor */
     private lateinit var cameraExecutor: ExecutorService
@@ -83,9 +83,9 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
         // Shut down our background executor
         cameraExecutor.shutdown()
         
-        // Shutdown Gemini helper
-        if (::geminiSceneHelper.isInitialized) {
-            geminiSceneHelper.shutdown()
+        // Shutdown scene analyzer (includes Gemini client and TTS)
+        if (::sceneAnalyzer.isInitialized) {
+            sceneAnalyzer.shutdown()
         }
     }
 
@@ -103,13 +103,17 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
+        // Initialize object detector
         objectDetectorHelper = ObjectDetectorHelper(
             context = requireContext(),
             objectDetectorListener = this)
 
-        // Initialize Gemini Scene Helper
-        val apiKey = getString(R.string.gemini_api_key)
-        geminiSceneHelper = GeminiSceneHelper(requireContext(), apiKey)
+        // Initialize Scene Analyzer with Gemini API
+        // API key loaded securely from BuildConfig (local.properties)
+        sceneAnalyzer = SceneAnalyzer(
+            context = requireContext(),
+            apiKey = BuildConfig.GEMINI_API_KEY
+        )
 
         // Initialize our background executor
         cameraExecutor = Executors.newSingleThreadExecutor()
@@ -328,13 +332,12 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
             // Force a redraw
             fragmentCameraBinding.overlay.invalidate()
             
-            // Store current detections and analyze scene with Gemini
-            currentDetections = results
+            // ===== GEMINI VISION INTEGRATION =====
+            // After YOLO detection, analyze scene with Gemini
+            // - Only calls API if cooldown passed AND scene changed
+            // - Speaks result via TTS for blind user assistance
             if (results != null && results.isNotEmpty() && ::bitmapBuffer.isInitialized) {
-                geminiSceneHelper.analyzeScene(bitmapBuffer, results) { description ->
-                    Log.d(TAG, "Scene description: $description")
-                    // Update UI with description if needed
-                }
+                sceneAnalyzer.analyzeScene(bitmapBuffer, results)
             }
         }
     }
