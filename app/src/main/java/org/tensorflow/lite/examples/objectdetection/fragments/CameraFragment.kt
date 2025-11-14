@@ -37,6 +37,7 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.navigation.Navigation
 import org.tensorflow.lite.examples.objectdetection.BuildConfig
+import org.tensorflow.lite.examples.objectdetection.NavigationGuidanceManager
 import org.tensorflow.lite.examples.objectdetection.SceneAnalyzer
 import java.util.LinkedList
 import java.util.concurrent.ExecutorService
@@ -57,6 +58,7 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
 
     private lateinit var objectDetectorHelper: ObjectDetectorHelper
     private lateinit var sceneAnalyzer: SceneAnalyzer
+    private lateinit var navigationGuidanceManager: NavigationGuidanceManager
     private lateinit var bitmapBuffer: Bitmap
     private var preview: Preview? = null
     private var imageAnalyzer: ImageAnalysis? = null
@@ -87,6 +89,11 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
         if (::sceneAnalyzer.isInitialized) {
             sceneAnalyzer.shutdown()
         }
+        
+        // Shutdown navigation guidance manager
+        if (::navigationGuidanceManager.isInitialized) {
+            navigationGuidanceManager.shutdown()
+        }
     }
 
     override fun onCreateView(
@@ -114,6 +121,9 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
             context = requireContext(),
             apiKey = BuildConfig.GEMINI_API_KEY
         )
+        
+        // Initialize Navigation Guidance Manager for real-time obstacle warnings
+        navigationGuidanceManager = NavigationGuidanceManager(requireContext())
 
         // Initialize our background executor
         cameraExecutor = Executors.newSingleThreadExecutor()
@@ -331,6 +341,15 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
 
             // Force a redraw
             fragmentCameraBinding.overlay.invalidate()
+            
+            // ===== REAL-TIME NAVIGATION GUIDANCE =====
+            // Process every frame for immediate obstacle warnings
+            // - NavigationEngine filters and prioritizes detections
+            // - WarningRateLimiter prevents spam (2.5s global, 5s per-object cooldown)
+            // - Speaks urgent warnings: "Person ahead, very close — stop"
+            if (results != null && results.isNotEmpty()) {
+                navigationGuidanceManager.processFrame(results, imageWidth, imageHeight)
+            }
             
             // ===== GEMINI VISION INTEGRATION =====
             // After YOLO detection, analyze scene with Gemini
