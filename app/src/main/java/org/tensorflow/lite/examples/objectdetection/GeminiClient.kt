@@ -28,6 +28,7 @@ class GeminiClient(private val apiKey: String) {
     
     companion object {
         private const val TAG = "GeminiClient"
+        // Fixed: Use v1beta API with correct model name
         private const val GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
         private const val TIMEOUT_SECONDS = 15L
         private const val IMAGE_QUALITY = 75 // JPEG quality (0-100)
