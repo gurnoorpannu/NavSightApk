@@ -342,13 +342,23 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
             // Force a redraw
             fragmentCameraBinding.overlay.invalidate()
             
-            // ===== REAL-TIME NAVIGATION GUIDANCE =====
-            // Process every frame for immediate obstacle warnings
-            // - NavigationEngine filters and prioritizes detections
-            // - WarningRateLimiter prevents spam (2.5s global, 5s per-object cooldown)
-            // - Speaks urgent warnings: "Person ahead, very close — stop"
+            // ===== STEP 3: PATH GUIDANCE (CONTINUOUS) =====
+            // Analyzes ALL obstacles and provides path decisions
+            // - MOVE_STRAIGHT: Path clear
+            // - MOVE_LEFT/RIGHT: Obstacle ahead, adjust path
+            // - STOP: Very close obstacle
+            // State machine prevents repeating same decision
             if (results != null && results.isNotEmpty()) {
-                navigationGuidanceManager.processFrame(results, imageWidth, imageHeight)
+                navigationGuidanceManager.providePathGuidance(results, imageWidth, imageHeight)
+            }
+            
+            // ===== STEP 3: SCENE SUMMARY (AUTO-TRIGGERED) =====
+            // Speaks multi-object summary every 12s if scene changes >40%
+            // Example: "Two people ahead and a chair on your right"
+            if (results != null && results.isNotEmpty()) {
+                if (navigationGuidanceManager.shouldAutoSummarize(results, imageWidth, imageHeight)) {
+                    navigationGuidanceManager.speakSceneSummary(results, imageWidth, imageHeight)
+                }
             }
             
             // ===== GEMINI VISION INTEGRATION =====

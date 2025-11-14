@@ -23,8 +23,14 @@ class NavigationGuidanceManager(context: Context) {
     }
     
     private val navigationEngine = NavigationEngine()
+    private val pathPlanner = PathPlanner()
+    private val sceneSummaryEngine = SceneSummaryEngine()
+    
     private var textToSpeech: TextToSpeech? = null
     private var isTtsReady = false
+    
+    // State machine for path guidance
+    private var lastPathDecision: PathDecision = PathDecision.MOVE_STRAIGHT
     
     init {
         initializeTextToSpeech(context)
@@ -83,6 +89,9 @@ class NavigationGuidanceManager(context: Context) {
             }
         }
         
+        // Log detection count for debugging
+        Log.d(TAG, "Processing ${navigationDetections.size} detections")
+        
         // Analyze with NavigationEngine (includes rate limiting)
         val guidance = navigationEngine.analyzeDetections(
             detections = navigationDetections,
@@ -93,7 +102,9 @@ class NavigationGuidanceManager(context: Context) {
         if (guidance != null) {
             val announcement = guidanceToAnnouncement(guidance)
             speak(announcement)
-            Log.d(TAG, "Navigation guidance: $announcement")
+            Log.d(TAG, "✓ ANNOUNCED: $announcement [label=${guidance.label}, distance=${guidance.distance}, direction=${guidance.direction}, priority=${guidance.priority}]")
+        } else {
+            Log.d(TAG, "✗ SUPPRESSED: No guidance generated (filtered or rate-limited)")
         }
     }
     
@@ -149,6 +160,123 @@ class NavigationGuidanceManager(context: Context) {
      */
     fun getDebugInfo(): String {
         return WarningRateLimiter.getDebugInfo()
+    }
+    
+    /**
+     * Provides continuous path guidance based on all obstacles
+     * Uses state machine to avoid repeating same decision
+     * 
+     * @param detections YOLO detection results
+     * @param imageWidth Image width for normalization
+     * @param imageHeight Image height for normalization
+     */
+    fun providePathGuidance(
+        detections: List<Detection>,
+        imageWidth: Int,
+        imageHeight: Int
+    ) {
+        if (detections.isEmpty()) {
+            return
+        }
+        
+        // Convert detections
+        val navigationDetections = detections.mapNotNull { detection ->
+            try {
+                DetectionConverter.toNavigationDetection(detection, imageWidth, imageHeight)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to convert detection: ${e.message}")
+                null
+            }
+        }
+        
+        // Get path decision
+        val decision = pathPlanner.decide(navigationDetections)
+        
+        // Only speak if decision changed (state machine)
+        if (decision != lastPathDecision) {
+            speakPathGuidance(decision)
+            lastPathDecision = decision
+        }
+    }
+    
+    /**
+     * Speaks path guidance based on decision
+     * 
+     * @param decision The path decision to announce
+     */
+    private fun speakPathGuidance(decision: PathDecision) {
+        val guidance = when (decision) {
+            PathDecision.MOVE_STRAIGHT -> "Path clear, keep walking straight"
+            PathDecision.MOVE_LEFT -> "Obstacle ahead, move slightly left"
+            PathDecision.MOVE_RIGHT -> "Move to your right to avoid the obstacle"
+            PathDecision.STOP -> "Stop. Obstacle very close ahead"
+        }
+        
+        speak(guidance)
+        Log.d(TAG, "Path guidance: $guidance (decision=$decision)")
+    }
+    
+    /**
+     * Generates and speaks a scene summary
+     * Call this on user request or automatically when scene changes
+     * 
+     * @param detections YOLO detection results
+     * @param imageWidth Image width for normalization
+     * @param imageHeight Image height for normalization
+     */
+    fun speakSceneSummary(
+        detections: List<Detection>,
+        imageWidth: Int,
+        imageHeight: Int
+    ) {
+        // Convert detections
+        val navigationDetections = detections.mapNotNull { detection ->
+            try {
+                DetectionConverter.toNavigationDetection(detection, imageWidth, imageHeight)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to convert detection: ${e.message}")
+                null
+            }
+        }
+        
+        // Generate summary
+        val summary = sceneSummaryEngine.generateSummary(navigationDetections)
+        speak(summary)
+        Log.d(TAG, "Scene summary: $summary")
+    }
+    
+    /**
+     * Checks if scene summary should be automatically triggered
+     * 
+     * @param detections YOLO detection results
+     * @param imageWidth Image width for normalization
+     * @param imageHeight Image height for normalization
+     * @return true if auto-summary should be spoken
+     */
+    fun shouldAutoSummarize(
+        detections: List<Detection>,
+        imageWidth: Int,
+        imageHeight: Int
+    ): Boolean {
+        val navigationDetections = detections.mapNotNull { detection ->
+            try {
+                DetectionConverter.toNavigationDetection(detection, imageWidth, imageHeight)
+            } catch (e: Exception) {
+                null
+            }
+        }
+        
+        return sceneSummaryEngine.shouldAutoSummarize(navigationDetections)
+    }
+    
+    /**
+     * Resets all state (path decision, scene summary tracking, rate limiter)
+     */
+    fun resetAll() {
+        lastPathDecision = PathDecision.MOVE_STRAIGHT
+        sceneSummaryEngine.reset()
+        WarningRateLimiter.reset()
+        Log.d(TAG, "All state reset")
     }
     
     /**

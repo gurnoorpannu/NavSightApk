@@ -1,5 +1,7 @@
 package org.tensorflow.lite.examples.objectdetection.navigation
 
+import android.util.Log
+
 /**
  * Warning Rate Limiter - Anti-Spam System
  * 
@@ -48,11 +50,14 @@ object WarningRateLimiter {
         
         // Rule 1: Global cooldown check
         if (currentTime - lastGlobalAlertTime < GLOBAL_COOLDOWN_MS) {
+            val remaining = GLOBAL_COOLDOWN_MS - (currentTime - lastGlobalAlertTime)
+            Log.d("WarningRateLimiter", "SUPPRESSED: Global cooldown active (${remaining}ms remaining)")
             return false
         }
         
         // Rule 2: Hard suppression - FAR distance
         if (guidance.distance == DistanceCategory.FAR) {
+            Log.d("WarningRateLimiter", "SUPPRESSED: FAR distance (${guidance.label})")
             return false
         }
         
@@ -77,6 +82,8 @@ object WarningRateLimiter {
         // Rule 6: Per-object cooldown check
         val lastObjectTime = lastObjectAlertTime[guidance.label] ?: 0L
         if (currentTime - lastObjectTime < PER_OBJECT_COOLDOWN_MS) {
+            val remaining = PER_OBJECT_COOLDOWN_MS - (currentTime - lastObjectTime)
+            Log.d("WarningRateLimiter", "SUPPRESSED: Per-object cooldown for '${guidance.label}' (${remaining}ms remaining)")
             return false
         }
         
@@ -107,6 +114,7 @@ object WarningRateLimiter {
         }
         
         // All checks passed - announcement allowed
+        Log.d("WarningRateLimiter", "ALLOWED: ${guidance.label} ${guidance.distance} ${guidance.direction}")
         return true
     }
 
