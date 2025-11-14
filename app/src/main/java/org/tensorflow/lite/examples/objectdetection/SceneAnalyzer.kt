@@ -103,6 +103,65 @@ Keep it under 3 sentences."""
     }
     
     /**
+     * MANUAL ANALYSIS: Analyzes surroundings on user request
+     * 
+     * Bypasses cooldown and scene change detection.
+     * Provides comprehensive scene description.
+     * 
+     * @param bitmap Current camera frame
+     * @param detections YOLO detection results (optional, for fallback)
+     * @param onComplete Callback when analysis completes (optional)
+     */
+    fun analyzeSurroundingsManually(
+        bitmap: Bitmap, 
+        detections: List<Detection>? = null,
+        onComplete: (() -> Unit)? = null
+    ) {
+        Log.d(TAG, "🔍 Manual surroundings analysis requested")
+        
+        // Update tracking to prevent auto-analysis spam after manual request
+        lastGeminiCallTime = System.currentTimeMillis()
+        if (detections != null) {
+            lastDetectionSignature = generateDetectionSignature(detections)
+        }
+        
+        // Enhanced prompt for comprehensive surroundings analysis
+        val comprehensivePrompt = """You are assisting a visually impaired person who wants to understand their surroundings.
+
+Provide a detailed but concise description of the scene including:
+1. The type of environment (indoor/outdoor, room type, etc.)
+2. Major objects and their locations (left, right, ahead, behind)
+3. People present and their approximate positions
+4. Any potential obstacles or hazards
+5. Overall spatial layout
+
+Keep the description clear, organized, and under 5 sentences.
+Use simple directional language (left, right, ahead, behind)."""
+        
+        // Call Gemini API with comprehensive prompt
+        geminiClient.analyzeImage(bitmap, comprehensivePrompt) { description ->
+            Log.d(TAG, "📝 Manual analysis result: $description")
+            
+            // Use Gemini description if valid, otherwise fallback
+            val finalDescription = if (description.startsWith("Scene unclear")) {
+                if (detections != null && detections.isNotEmpty()) {
+                    "Manual analysis: " + buildFallbackDescription(detections)
+                } else {
+                    "Unable to analyze surroundings. Please try again."
+                }
+            } else {
+                description
+            }
+            
+            // Speak comprehensive description
+            speak(finalDescription)
+            
+            // Notify completion
+            onComplete?.invoke()
+        }
+    }
+    
+    /**
      * Generates signature from detections for change detection
      * 
      * Format: "person:0.95,car:0.87,chair:0.76"

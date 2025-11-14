@@ -21,10 +21,11 @@ object WarningRateLimiter {
     private const val PER_OBJECT_COOLDOWN_MS = 5000L  // 5 seconds per label
     private const val DIRECTIONAL_COOLDOWN_MS = 3000L // 3 seconds per label+direction
     
-    // Hard suppression thresholds
-    private const val MIN_WIDTH_THRESHOLD = 0.08f     // Ignore very small objects
+    // STEP 4: Stricter hard suppression thresholds
+    private const val MIN_WIDTH_THRESHOLD = 0.12f     // Increased from 0.08f
     private const val EDGE_THRESHOLD = 0.05f          // Ignore objects at frame edges
     private const val EDGE_MAX_THRESHOLD = 0.95f
+    private const val FAR_WIDTH_THRESHOLD = 0.12f     // NEW: Hard cutoff for far objects
     
     // State tracking
     private var lastGlobalAlertTime: Long = 0L

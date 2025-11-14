@@ -50,4 +50,6 @@
         <item>EfficientDet Lite1</item>
         <item>EfficientDet Lite2</item>
     </string-array>
+
+    <string name="analyze_surroundings">Analyze Surroundings</string>
 </resources>
