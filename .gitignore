@@ -79,4 +79,4 @@ lint-results.xml
 *.hprof
 
 # API Keys - IMPORTANT: Keep your API keys secure!
-app/src/main/res/values/api_keys.xml
+# API keys are now in local.properties (already gitignored)

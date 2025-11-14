@@ -30,6 +30,14 @@ android {
         targetSdkVersion 35
         versionCode 1
         versionName "1.0.0"
+        
+        // Load Gemini API key from local.properties
+        def localProperties = new Properties()
+        def localPropertiesFile = rootProject.file('local.properties')
+        if (localPropertiesFile.exists()) {
+            localPropertiesFile.withInputStream { localProperties.load(it) }
+        }
+        buildConfigField "String", "GEMINI_API_KEY", "\"${localProperties.getProperty('GEMINI_API_KEY', '')}\""
     }
 
     dataBinding {
@@ -54,6 +62,7 @@ android {
 
     buildFeatures {
         viewBinding true
+        buildConfig true
     }
     androidResources {
         noCompress 'tflite'
@@ -122,6 +131,13 @@ dependencies {
     implementation 'org.tensorflow:tensorflow-lite-gpu-delegate-plugin:0.4.0'
     implementation 'org.tensorflow:tensorflow-lite-gpu:2.9.0'
 
-    // Coroutines for async operations (already included above but ensuring version)
+    // Coroutines for async operations
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3'
+    
+    // OkHttp for Gemini API calls
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'com.squareup.okhttp3:logging-interceptor:4.12.0'
+    
+    // JSON parsing
+    implementation 'org.json:json:20231013'
 }
