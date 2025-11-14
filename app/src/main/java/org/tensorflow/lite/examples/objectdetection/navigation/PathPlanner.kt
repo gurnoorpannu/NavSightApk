@@ -16,10 +16,11 @@ class PathPlanner {
     companion object {
         private const val TAG = "PathPlanner"
         
-        // Distance thresholds based on normalized width
+        // STEP 4: Stricter distance thresholds for better far object suppression
         private const val VERY_CLOSE_WIDTH = 0.45f
         private const val CLOSE_WIDTH = 0.30f
-        private const val MEDIUM_WIDTH = 0.15f
+        private const val MEDIUM_WIDTH = 0.20f      // Increased from 0.15f
+        private const val FAR_THRESHOLD = 0.12f     // NEW: Hard cutoff for far objects
         
         // Direction boundaries
         private const val LEFT_BOUNDARY = 0.33f

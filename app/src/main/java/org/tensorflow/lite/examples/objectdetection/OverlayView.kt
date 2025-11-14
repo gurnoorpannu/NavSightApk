@@ -114,6 +114,14 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         // the size that the captured images will be displayed.
         scaleFactor = max(width * 1f / imageWidth, height * 1f / imageHeight)
     }
+    
+    /**
+     * Get current detection results
+     * Used for manual surroundings analysis
+     */
+    fun getDetections(): List<Detection> {
+        return results
+    }
 
     companion object {
         private const val BOUNDING_RECT_TEXT_PADDING = 8
