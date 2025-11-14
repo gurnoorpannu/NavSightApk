@@ -36,9 +36,12 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.navigation.Navigation
-import org.tensorflow.lite.examples.objectdetection.BuildConfig
+import org.tensorflow.lite.examples.objectdetection.DepthEstimator
 import org.tensorflow.lite.examples.objectdetection.NavigationGuidanceManager
 import org.tensorflow.lite.examples.objectdetection.SceneAnalyzer
+import org.tensorflow.lite.examples.objectdetection.navigation.ClosestObjectSpeaker
+import org.tensorflow.lite.examples.objectdetection.navigation.DetectionConverter
+import org.tensorflow.lite.examples.objectdetection.navigation.DepthEnricher
 import java.util.LinkedList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -47,7 +50,9 @@ import org.tensorflow.lite.examples.objectdetection.R
 import org.tensorflow.lite.examples.objectdetection.databinding.FragmentCameraBinding
 import org.tensorflow.lite.task.vision.detector.Detection
 
-class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
+class CameraFragment : Fragment(), 
+    ObjectDetectorHelper.DetectorListener,
+    DepthEstimator.DepthEstimatorListener {
 
     private val TAG = "ObjectDetection"
 
@@ -59,6 +64,8 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
     private lateinit var objectDetectorHelper: ObjectDetectorHelper
     private lateinit var sceneAnalyzer: SceneAnalyzer
     private lateinit var navigationGuidanceManager: NavigationGuidanceManager
+    private lateinit var depthEstimator: DepthEstimator
+    private lateinit var closestObjectSpeaker: ClosestObjectSpeaker
     private lateinit var bitmapBuffer: Bitmap
     private var preview: Preview? = null
     private var imageAnalyzer: ImageAnalysis? = null
@@ -67,6 +74,9 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
 
     /** Blocking camera operations are performed using this executor */
     private lateinit var cameraExecutor: ExecutorService
+    
+    /** Separate executor for depth estimation to avoid blocking object detection */
+    private lateinit var depthExecutor: ExecutorService
 
     override fun onResume() {
         super.onResume()
@@ -85,6 +95,16 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
         // Shut down our background executor
         cameraExecutor.shutdown()
         
+        // Shutdown depth estimator
+        if (::depthEstimator.isInitialized) {
+            depthEstimator.close()
+        }
+        
+        // Shutdown depth executor
+        if (::depthExecutor.isInitialized) {
+            depthExecutor.shutdown()
+        }
+        
         // Shutdown scene analyzer (includes Gemini client and TTS)
         if (::sceneAnalyzer.isInitialized) {
             sceneAnalyzer.shutdown()
@@ -93,6 +113,11 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
         // Shutdown navigation guidance manager
         if (::navigationGuidanceManager.isInitialized) {
             navigationGuidanceManager.shutdown()
+        }
+        
+        // Shutdown closest object speaker
+        if (::closestObjectSpeaker.isInitialized) {
+            closestObjectSpeaker.shutdown()
         }
     }
 
@@ -116,17 +141,32 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
             objectDetectorListener = this)
 
         // Initialize Scene Analyzer with Gemini API
-        // API key loaded securely from BuildConfig (local.properties)
+        // API key hardcoded directly
         sceneAnalyzer = SceneAnalyzer(
             context = requireContext(),
-            apiKey = BuildConfig.GEMINI_API_KEY
+            apiKey = "AIzaSyBImwWWocwj5BfPswuMZtTsYj6P11ymB7o"
         )
         
-        // Initialize Navigation Guidance Manager for real-time obstacle warnings
-        navigationGuidanceManager = NavigationGuidanceManager(requireContext())
+        // Initialize MiDaS Depth Estimator first (needed by NavigationGuidanceManager)
+        depthEstimator = DepthEstimator(
+            context = requireContext(),
+            listener = this
+        )
+        depthEstimator.initialize()
+        Log.i(TAG, "✓ MiDaS depth estimator initialized")
+        
+        // Initialize Navigation Guidance Manager with depth estimator for accurate distance
+        navigationGuidanceManager = NavigationGuidanceManager(
+            context = requireContext(),
+            depthEstimator = depthEstimator
+        )
+        
+        // Initialize Closest Object Speaker for single-object announcements
+        closestObjectSpeaker = ClosestObjectSpeaker(requireContext())
 
-        // Initialize our background executor
+        // Initialize our background executors
         cameraExecutor = Executors.newSingleThreadExecutor()
+        depthExecutor = Executors.newSingleThreadExecutor()
 
         // Wait for the views to be properly laid out
         fragmentCameraBinding.viewFinder.post {
@@ -136,6 +176,9 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
 
         // Attach listeners to UI control widgets
         initBottomSheetControls()
+        
+        // Setup Analyze Surroundings button
+        setupAnalyzeSurroundingsButton()
     }
 
     private fun initBottomSheetControls() {
@@ -311,8 +354,14 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
         image.use { bitmapBuffer.copyPixelsFromBuffer(image.planes[0].buffer) }
 
         val imageRotation = image.imageInfo.rotationDegrees
-        // Pass Bitmap and rotation to the object detector helper for processing and detection
+        
+        // Run object detection (on camera executor thread)
         objectDetectorHelper.detect(bitmapBuffer, imageRotation)
+        
+        // Run depth estimation in parallel (on separate depth executor thread)
+        depthExecutor.execute {
+            depthEstimator.estimateDepth(bitmapBuffer)
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -342,38 +391,132 @@ class CameraFragment : Fragment(), ObjectDetectorHelper.DetectorListener {
             // Force a redraw
             fragmentCameraBinding.overlay.invalidate()
             
-            // ===== STEP 3: PATH GUIDANCE (CONTINUOUS) =====
-            // Analyzes ALL obstacles and provides path decisions
-            // - MOVE_STRAIGHT: Path clear
-            // - MOVE_LEFT/RIGHT: Obstacle ahead, adjust path
-            // - STOP: Very close obstacle
-            // State machine prevents repeating same decision
+            // ===== CLOSEST OBJECT DETECTION (MIDAS DEPTH) =====
+            // Speaks ONLY the single closest object using MiDaS depth estimation
+            // - Filters by confidence >= 0.40
+            // - Selects object with smallest distanceMeters
+            // - EMA smoothing (alpha=0.35) to avoid jitter
+            // - Hysteresis: Only speaks if distance changes >0.3m OR label changes
+            // - Cooldown: Maximum once every 1200ms
+            // - Format: "[label], about X.X meters to your left/right/ahead"
             if (results != null && results.isNotEmpty()) {
-                navigationGuidanceManager.providePathGuidance(results, imageWidth, imageHeight)
-            }
-            
-            // ===== STEP 3: SCENE SUMMARY (AUTO-TRIGGERED) =====
-            // Speaks multi-object summary every 12s if scene changes >40%
-            // Example: "Two people ahead and a chair on your right"
-            if (results != null && results.isNotEmpty()) {
-                if (navigationGuidanceManager.shouldAutoSummarize(results, imageWidth, imageHeight)) {
-                    navigationGuidanceManager.speakSceneSummary(results, imageWidth, imageHeight)
+                // Convert to NavigationDetections
+                val navigationDetections = results.mapNotNull { detection ->
+                    try {
+                        DetectionConverter.toNavigationDetection(detection, imageWidth, imageHeight)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to convert detection: ${e.message}")
+                        null
+                    }
                 }
+                
+                // Enrich with MiDaS depth
+                val enrichedDetections = DepthEnricher.enrichWithDepth(
+                    navigationDetections,
+                    depthEstimator,
+                    imageWidth,
+                    imageHeight
+                )
+                
+                // Process with closest object speaker
+                closestObjectSpeaker.processDetections(enrichedDetections, imageWidth)
             }
             
-            // ===== GEMINI VISION INTEGRATION =====
-            // After YOLO detection, analyze scene with Gemini
-            // - Only calls API if cooldown passed AND scene changed
-            // - Speaks result via TTS for blind user assistance
-            if (results != null && results.isNotEmpty() && ::bitmapBuffer.isInitialized) {
-                sceneAnalyzer.analyzeScene(bitmapBuffer, results)
-            }
+            // ===== OLD SPEECH SYSTEMS - DISABLED =====
+            // These are commented out to prevent multiple speech outputs
+            // Only ClosestObjectSpeaker should speak now
+            
+            // DISABLED: PATH GUIDANCE (was speaking about all obstacles)
+            // if (results != null && results.isNotEmpty()) {
+            //     navigationGuidanceManager.providePathGuidance(results, imageWidth, imageHeight)
+            // }
+            
+            // DISABLED: SCENE SUMMARY (was speaking multi-object summaries)
+            // if (results != null && results.isNotEmpty()) {
+            //     if (navigationGuidanceManager.shouldAutoSummarize(results, imageWidth, imageHeight)) {
+            //         navigationGuidanceManager.speakSceneSummary(results, imageWidth, imageHeight)
+            //     }
+            // }
+            
+            // DISABLED: GEMINI VISION (was speaking scene analysis)
+            // if (results != null && results.isNotEmpty() && ::bitmapBuffer.isInitialized) {
+            //     sceneAnalyzer.analyzeScene(bitmapBuffer, results)
+            // }
         }
     }
 
+    // ObjectDetectorHelper.DetectorListener callback
     override fun onError(error: String) {
         activity?.runOnUiThread {
             Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
         }
+    }
+    
+    /**
+     * Setup the Analyze Surroundings button
+     * When clicked, sends current camera frame to Gemini for comprehensive analysis
+     */
+    private fun setupAnalyzeSurroundingsButton() {
+        fragmentCameraBinding.analyzeSurroundingsButton.setOnClickListener {
+            Log.d(TAG, "🔍 Analyze Surroundings button clicked")
+            
+            // Check if bitmap is initialized
+            if (!::bitmapBuffer.isInitialized) {
+                Toast.makeText(
+                    requireContext(),
+                    "Camera not ready. Please wait.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                return@setOnClickListener
+            }
+            
+            // Get current detections (optional, for fallback)
+            val currentDetections = fragmentCameraBinding.overlay.getDetections()
+            
+            // Show feedback to user
+            Toast.makeText(
+                requireContext(),
+                "Analyzing surroundings...",
+                Toast.LENGTH_SHORT
+            ).show()
+            
+            // PAUSE navigation guidance to avoid speech overlap
+            navigationGuidanceManager.pauseGuidance()
+            Log.d(TAG, "⏸️ Navigation guidance paused for manual analysis")
+            
+            // Call manual analysis with completion callback
+            sceneAnalyzer.analyzeSurroundingsManually(
+                bitmap = bitmapBuffer,
+                detections = currentDetections,
+                onComplete = {
+                    // Resume navigation guidance after analysis completes
+                    activity?.runOnUiThread {
+                        navigationGuidanceManager.resumeGuidance()
+                        Log.d(TAG, "▶️ Navigation guidance resumed after manual analysis")
+                    }
+                }
+            )
+            
+            Log.d(TAG, "✓ Manual analysis triggered")
+        }
+    }
+    
+    // ===== DEPTH ESTIMATOR LISTENER CALLBACKS =====
+    
+    override fun onDepthMapReady(
+        depthMap: FloatArray,
+        width: Int,
+        height: Int,
+        inferenceTime: Long
+    ) {
+        // Depth map is cached in DepthEstimator, no action needed here
+        // Just log for monitoring
+        Log.d(TAG, "Depth map ready: ${width}x${height}, inference time: ${inferenceTime}ms")
+    }
+    
+    override fun onDepthEstimationError(error: String) {
+        // Depth estimation error - log but don't crash
+        // Navigation will fall back to pixel-based distance
+        Log.w(TAG, "Depth estimation error: $error")
     }
 }
