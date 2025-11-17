@@ -40,6 +40,14 @@ class NavigationGuidanceManager(
     private val pathPlanner = PathPlanner()
     private val sceneSummaryEngine = SceneSummaryEngine()
     
+    // Partition-based navigation guidance (replaces angle-based)
+    private var partitionGuidance: PartitionNavGuidance? = null
+    private var speechCoordinator: SpeechCoordinator? = null
+    
+    // Legacy angle-based guidance (deprecated, kept for backwards compatibility)
+    @Deprecated("Use partitionGuidance instead")
+    private var angleBasedGuidance: AngleBasedNavigationGuidance? = null
+    
     private var textToSpeech: TextToSpeech? = null
     private var isTtsReady = false
     
@@ -54,6 +62,20 @@ class NavigationGuidanceManager(
     
     init {
         initializeTextToSpeech(context)
+        initializePartitionGuidance(context)
+    }
+    
+    /**
+     * Initialize partition-based navigation guidance with speech coordination
+     */
+    private fun initializePartitionGuidance(context: Context) {
+        // Create speech coordinator (manages TTS and priorities)
+        speechCoordinator = SpeechCoordinator(context)
+        
+        // Create partition-based navigation guidance
+        partitionGuidance = PartitionNavGuidance(context, speechCoordinator!!)
+        
+        Log.d(TAG, "Partition-based navigation guidance initialized")
     }
     
     /**
@@ -137,19 +159,19 @@ class NavigationGuidanceManager(
             Log.d(TAG, DepthEnricher.getEnrichmentSummary(enrichedDetections))
         }
         
-        // Analyze with NavigationEngine (includes rate limiting)
+        // Use partition-based navigation guidance for turn-by-turn instructions
+        partitionGuidance?.update(enrichedDetections, imageWidth, imageHeight)
+        
+        // Also run the old navigation engine for fallback/debugging
         val guidance = navigationEngine.analyzeDetections(
             detections = enrichedDetections,
             enableRateLimiting = true
         )
         
-        // Speak guidance if approved by rate limiter
+        // Log old system output for comparison (but don't speak it)
         if (guidance != null) {
             val announcement = guidanceToAnnouncement(guidance)
-            speak(announcement)
-            Log.d(TAG, "✓ ANNOUNCED: $announcement [label=${guidance.label}, distance=${guidance.distance}, direction=${guidance.direction}, priority=${guidance.priority}]")
-        } else {
-            Log.d(TAG, "✗ SUPPRESSED: No guidance generated (filtered or rate-limited)")
+            Log.d(TAG, "[OLD SYSTEM] Would announce: $announcement")
         }
     }
     
@@ -360,6 +382,7 @@ class NavigationGuidanceManager(
     fun shutdown() {
         textToSpeech?.stop()
         textToSpeech?.shutdown()
+        speechCoordinator?.shutdown()
         Log.d(TAG, "Navigation guidance manager shutdown")
     }
 }
