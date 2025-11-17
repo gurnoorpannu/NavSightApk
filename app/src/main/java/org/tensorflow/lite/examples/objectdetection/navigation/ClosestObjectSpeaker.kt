@@ -25,18 +25,21 @@ class ClosestObjectSpeaker(context: Context) {
         // Filtering
         private const val MIN_CONFIDENCE = 0.40f
         
-        // EMA smoothing
-        private const val EMA_ALPHA = 0.35f
+        // EMA smoothing - reduced for more aggressive smoothing
+        private const val EMA_ALPHA = 0.2f // (was 0.35f)
         
-        // Hysteresis
-        private const val DISTANCE_CHANGE_THRESHOLD = 0.3f // meters
+        // Hysteresis - increased to reduce spamming
+        private const val DISTANCE_CHANGE_THRESHOLD = 0.6f // meters (was 0.3f)
         
-        // Cooldown
-        private const val COOLDOWN_MS = 1200L
+        // Cooldown - increased to reduce spamming
+        private const val COOLDOWN_MS = 3000L // 3 seconds (was 1200ms)
     }
     
     private var textToSpeech: TextToSpeech? = null
     private var isTtsReady = false
+    
+    // Speech coordination
+    private var speechCoordinator: SpeechCoordinator? = null
     
     // State tracking
     private var lastSpokenLabel: String? = null
@@ -46,6 +49,13 @@ class ClosestObjectSpeaker(context: Context) {
     
     init {
         initializeTextToSpeech(context)
+    }
+    
+    /**
+     * Set speech coordinator for suppression checks
+     */
+    fun setSpeechCoordinator(coordinator: SpeechCoordinator) {
+        this.speechCoordinator = coordinator
     }
     
     private fun initializeTextToSpeech(context: Context) {
@@ -71,6 +81,12 @@ class ClosestObjectSpeaker(context: Context) {
      * @param previewWidth Width of preview for left/center/right determination
      */
     fun processDetections(detections: List<NavigationDetection>, previewWidth: Int) {
+        // Check if suppressed by navigation guidance
+        if (speechCoordinator?.isClosestObjectSpeakerSuppressed() == true) {
+            Log.d(TAG, "Suppressed by navigation guidance")
+            return
+        }
+        
         // Filter by confidence
         val validDetections = detections.filter { it.confidence >= MIN_CONFIDENCE }
         
