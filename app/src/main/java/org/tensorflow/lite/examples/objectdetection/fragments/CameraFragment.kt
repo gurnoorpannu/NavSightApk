@@ -39,9 +39,11 @@ import androidx.navigation.Navigation
 import org.tensorflow.lite.examples.objectdetection.DepthEstimator
 import org.tensorflow.lite.examples.objectdetection.NavigationGuidanceManager
 import org.tensorflow.lite.examples.objectdetection.SceneAnalyzer
+import org.tensorflow.lite.examples.objectdetection.navigation.PartitionNavGuidance
 import org.tensorflow.lite.examples.objectdetection.navigation.ClosestObjectSpeaker
 import org.tensorflow.lite.examples.objectdetection.navigation.DetectionConverter
 import org.tensorflow.lite.examples.objectdetection.navigation.DepthEnricher
+import org.tensorflow.lite.examples.objectdetection.navigation.SpeechCoordinator
 import java.util.LinkedList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -66,6 +68,8 @@ class CameraFragment : Fragment(),
     private lateinit var navigationGuidanceManager: NavigationGuidanceManager
     private lateinit var depthEstimator: DepthEstimator
     private lateinit var closestObjectSpeaker: ClosestObjectSpeaker
+    private lateinit var partitionNavigation: PartitionNavGuidance
+    private lateinit var speechCoordinator: SpeechCoordinator
     private lateinit var bitmapBuffer: Bitmap
     private var preview: Preview? = null
     private var imageAnalyzer: ImageAnalysis? = null
@@ -119,6 +123,11 @@ class CameraFragment : Fragment(),
         if (::closestObjectSpeaker.isInitialized) {
             closestObjectSpeaker.shutdown()
         }
+        
+        // Shutdown speech coordinator
+        if (::speechCoordinator.isInitialized) {
+            speechCoordinator.shutdown()
+        }
     }
 
     override fun onCreateView(
@@ -161,8 +170,18 @@ class CameraFragment : Fragment(),
             depthEstimator = depthEstimator
         )
         
+        // Initialize Speech Coordinator for managing TTS priorities
+        speechCoordinator = SpeechCoordinator(requireContext())
+        
+        // Initialize Partition-Based Navigation Guidance (replaces angle-based)
+        partitionNavigation = PartitionNavGuidance(
+            context = requireContext(),
+            speechCoordinator = speechCoordinator
+        )
+        
         // Initialize Closest Object Speaker for single-object announcements
         closestObjectSpeaker = ClosestObjectSpeaker(requireContext())
+        closestObjectSpeaker.setSpeechCoordinator(speechCoordinator)
 
         // Initialize our background executors
         cameraExecutor = Executors.newSingleThreadExecutor()
@@ -290,6 +309,7 @@ class CameraFragment : Fragment(),
         )
     }
 
+
     // Declare and bind preview, capture and analysis use cases
     @SuppressLint("UnsafeOptInUsageError")
     private fun bindCameraUseCases() {
@@ -298,9 +318,8 @@ class CameraFragment : Fragment(),
         val cameraProvider =
             cameraProvider ?: throw IllegalStateException("Camera initialization failed.")
 
-        // CameraSelector - makes assumption that we're only using the back camera
-        val cameraSelector =
-            CameraSelector.Builder().requireLensFacing(CameraSelector.LENS_FACING_BACK).build()
+        // CameraSelector - using standard back camera
+        val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
         // Preview. Only using the 4:3 ratio because this is the closest to our models
         preview =
@@ -320,16 +339,6 @@ class CameraFragment : Fragment(),
                 // The analyzer can then be assigned to the instance
                 .also {
                     it.setAnalyzer(cameraExecutor) { image ->
-                        if (!::bitmapBuffer.isInitialized) {
-                            // The image rotation and RGB image buffer are initialized only once
-                            // the analyzer has started running
-                            bitmapBuffer = Bitmap.createBitmap(
-                              image.width,
-                              image.height,
-                              Bitmap.Config.ARGB_8888
-                            )
-                        }
-
                         detectObjects(image)
                     }
                 }
@@ -350,6 +359,23 @@ class CameraFragment : Fragment(),
     }
 
     private fun detectObjects(image: ImageProxy) {
+        // Recreate bitmap buffer if dimensions changed (can happen with ultrawide camera)
+        if (!::bitmapBuffer.isInitialized || 
+            bitmapBuffer.width != image.width || 
+            bitmapBuffer.height != image.height) {
+            
+            if (::bitmapBuffer.isInitialized) {
+                Log.d(TAG, "Image dimensions changed: ${bitmapBuffer.width}x${bitmapBuffer.height} -> ${image.width}x${image.height}")
+            }
+            
+            bitmapBuffer = Bitmap.createBitmap(
+                image.width,
+                image.height,
+                Bitmap.Config.ARGB_8888
+            )
+            Log.d(TAG, "Created bitmap buffer: ${image.width}x${image.height}")
+        }
+        
         // Copy out RGB bits to the shared bitmap buffer
         image.use { bitmapBuffer.copyPixelsFromBuffer(image.planes[0].buffer) }
 
@@ -418,8 +444,17 @@ class CameraFragment : Fragment(),
                     imageHeight
                 )
                 
-                // Process with closest object speaker
-                closestObjectSpeaker.processDetections(enrichedDetections, imageWidth)
+                // ===== PARTITION-BASED NAVIGATION GUIDANCE =====
+                // Provides complete navigation guidance with object identification
+                // Format: "frisbee ahead, 2.5 meters, step right"
+                // - Uses region occupancy and overlap instead of angles
+                // - Includes object label, distance, and navigation instruction
+                // - Single unified speech output (no separate ClosestObjectSpeaker needed)
+                partitionNavigation.update(enrichedDetections, imageWidth, imageHeight)
+                
+                // ===== CLOSEST OBJECT SPEAKER - DISABLED =====
+                // Now handled by PartitionNavGuidance which includes object label
+                // closestObjectSpeaker.processDetections(enrichedDetections, imageWidth)
             }
             
             // ===== OLD SPEECH SYSTEMS - DISABLED =====
