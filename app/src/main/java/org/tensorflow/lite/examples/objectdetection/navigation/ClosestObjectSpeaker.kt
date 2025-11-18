@@ -147,16 +147,11 @@ class ClosestObjectSpeaker(context: Context) {
         val direction = when {
             centerX < 1f / 3f -> "to your left"
             centerX > 2f / 3f -> "to your right"
-            else -> "ahead"
+            else -> "ahead of you"
         }
         
-        // Format speech
-        val announcement = String.format(
-            "%s, about %.1f meters %s",
-            label,
-            currentSmoothed,
-            direction
-        )
+        // Format speech (without distance)
+        val announcement = "$label $direction"
         
         // Speak
         speak(announcement)

@@ -150,15 +150,14 @@ class PartitionNavGuidance(
             Log.d(TAG, "Normal decision repeat (${timeSinceLastSpeech}ms since last)")
         }
         
-        // Step 5: Build speech message with object label
-        // Format: "frisbee ahead, 2.5 meters, step right"
-        val distanceInfo = String.format("%.1f meters", distance)
+        // Step 5: Build speech message with object label (without distance)
+        // Format: "frisbee ahead of you, move right"
         val message = when (decision) {
-            NavigationDecision.STOP -> "$objectLabel ahead, $distanceInfo, stop"
-            NavigationDecision.STEP_LEFT -> "$objectLabel ahead, $distanceInfo, step left"
-            NavigationDecision.STEP_RIGHT -> "$objectLabel ahead, $distanceInfo, step right"
-            NavigationDecision.GO_STRAIGHT -> "$objectLabel ahead, $distanceInfo, go straight"
-            else -> "$objectLabel ahead, $distanceInfo"
+            NavigationDecision.STOP -> "$objectLabel ahead of you, stop"
+            NavigationDecision.STEP_LEFT -> "$objectLabel ahead of you, move left"
+            NavigationDecision.STEP_RIGHT -> "$objectLabel ahead of you, move right"
+            NavigationDecision.GO_STRAIGHT -> "$objectLabel ahead of you, move straight"
+            else -> "$objectLabel ahead of you"
         }
         
         // Step 6: Request speech
